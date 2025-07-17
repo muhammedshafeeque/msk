@@ -221,6 +221,15 @@ async function runToolWithConfirmation(tool, args, purpose) {
   console.log(chalk.yellow(`📋 Purpose: ${purpose}`));
   console.log(chalk.green(`⚡ Command: ${cmd}`));
   
+  // Add progress indicator for long-running tools
+  const longRunningTools = ['recon-ng', 'amass', 'nmap', 'masscan', 'gobuster', 'nikto'];
+  const isLongRunning = longRunningTools.some(longTool => cmd.includes(longTool));
+  
+  if (isLongRunning) {
+    console.log(chalk.yellow(`⏱️  This tool may take several minutes to complete...`));
+    console.log(chalk.cyan(`💡 You can monitor progress or press Ctrl+C to skip if needed`));
+  }
+  
   // Check if tool is available
   try {
     await execAsync(`which ${actualTool}`);
@@ -258,7 +267,17 @@ async function runToolWithConfirmation(tool, args, purpose) {
   
   try {
     const startTime = Date.now();
-    const { stdout, stderr } = await execAsync(cmd);
+    
+    // Set timeout for long-running tools (5 minutes)
+    const timeout = isLongRunning ? 300000 : 60000; // 5 minutes for long tools, 1 minute for others
+    
+    const { stdout, stderr } = await Promise.race([
+      execAsync(cmd),
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error(`Tool timed out after ${timeout/1000} seconds`)), timeout)
+      )
+    ]);
+    
     const endTime = Date.now();
     
     mcpMemory.tool_outputs[tool] = {
@@ -420,19 +439,27 @@ export async function reconEngine(target) {
   
   // Phase 1: Passive Reconnaissance
   console.log(chalk.bgGreen.black(`\n🔍 PHASE 1: Passive Reconnaissance`));
-  for (const tool of reconPlan.passive_phase || []) {
+  const passiveTools = reconPlan.passive_phase || [];
+  for (let i = 0; i < passiveTools.length; i++) {
+    const tool = passiveTools[i];
+    console.log(chalk.cyan(`\n[${i + 1}/${passiveTools.length}] Running passive reconnaissance tool...`));
     const result = await runToolWithConfirmation(tool.tool, tool.args, tool.purpose);
     console.log(chalk.cyan(`Result: ${result.status}`));
     if (result.output) console.log(result.output.substring(0, 200) + '...');
   }
+  console.log(chalk.bgGreen.white(`\n✅ PHASE 1 COMPLETED: Passive reconnaissance finished`));
   
   // Phase 2: Active Reconnaissance
   console.log(chalk.bgYellow.black(`\n🚀 PHASE 2: Active Reconnaissance`));
-  for (const tool of reconPlan.active_phase || []) {
+  const activeTools = reconPlan.active_phase || [];
+  for (let i = 0; i < activeTools.length; i++) {
+    const tool = activeTools[i];
+    console.log(chalk.cyan(`\n[${i + 1}/${activeTools.length}] Running active reconnaissance tool...`));
     const result = await runToolWithConfirmation(tool.tool, tool.args, tool.purpose);
     console.log(chalk.cyan(`Result: ${result.status}`));
     if (result.output) console.log(result.output.substring(0, 200) + '...');
   }
+  console.log(chalk.bgYellow.white(`\n✅ PHASE 2 COMPLETED: Active reconnaissance finished`));
   
   // Phase 3: Conditional Tools (based on discovered services)
   console.log(chalk.bgMagenta.black(`\n⚡ PHASE 3: Conditional Enumeration`));
