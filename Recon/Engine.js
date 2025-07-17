@@ -1,55 +1,76 @@
 // recon/reconEngine.js
-import { runNmap } from './Tools/nmap.js';
-import { runAmass } from './Tools/amass.js';
-import { runGobuster } from './Tools/gobuster.js';
-import { runHarvester } from './Tools/theHarvester.js';
-import { runWhatWeb } from './Tools/whatweb.js';
-import { runSSLScan } from './Tools/sslscan.js';
-import { runWhois } from './Tools/whois.js';
-import { chunk } from 'chunki';
 import chalk from 'chalk';
 import mistral from '../Config/Mistra.js';
+import { tools as allTools } from './Tools.js';
 
-const reconTools = [
-  "nmap",
-  "amass",
-  "theHarvester",
-  "gobuster",
-  "whatweb",
-  "sslscan",
-  "whois"
-];
+// Map tool names to their dynamic import paths and function names
+const toolMap = {
+  nmap: { path: './Tools/nmap.js', fn: 'runNmap' },
+  amass: { path: './Tools/amass.js', fn: 'runAmass' },
+  theHarvester: { path: './Tools/theHarvester.js', fn: 'runHarvester' },
+  gobuster: { path: './Tools/gobuster.js', fn: 'runGobuster' },
+  whatweb: { path: './Tools/whatweb.js', fn: 'runWhatWeb' },
+  sslscan: { path: './Tools/sslscan.js', fn: 'runSSLScan' },
+  whois: { path: './Tools/whois.js', fn: 'runWhois' },
+};
 
-export async function reconEngine(target) {
-  console.log(`🔍 Starting Recon on: ${target}\n`);
-  let results = [];
-
-  results.push(await runNmap(target));
-  results.push(await runAmass(target));
-  results.push(await runHarvester(target));
-  results.push(await runGobuster(target));
-  results.push(await runWhatWeb(target));
-  results.push(await runSSLScan(target));
-  results.push(await runWhois(target));
-
-  console.log(`✅ Recon Completed for ${target}`);
-  return results.join('\n');
+async function askMCPWhichTools(target) {
+  const prompt = `You are an advanced recon AI. Given the target: ${target}, select the most effective tools from this list: ${allTools.join(", ")}. 
+For each tool, specify the order and a short reason for its use. Return a JSON array of tool names in the order to run, e.g. ["nmap", "whois"].`;
+  try {
+    const aiResult = await mistral.chat.complete({
+      model: "mistral-large-latest",
+      messages: [
+        { role: "user", content: prompt }
+      ]
+    });
+    const content = aiResult.choices?.[0]?.message?.content;
+    // Try to extract JSON array from the response
+    const match = content.match(/\[.*\]/s);
+    if (match) {
+      return JSON.parse(match[0]);
+    }
+    // fallback: try to parse whole content
+    return JSON.parse(content);
+  } catch (err) {
+    console.log(chalk.red("\nAI tool selection failed: " + err.message));
+    // fallback: run all tools
+    return allTools;
+  }
 }
 
-export async function runChunkedRecon(target) {
-  const toolChunks = chunk(reconTools, 2);
-  console.log(chalk.bgMagenta.bold("\nRunning recon in chunks:"));
-  let allResults = [];
-  for (const [i, tools] of toolChunks.entries()) {
-    console.log(chalk.bgCyan.black(`\nChunk ${i + 1}: `) + tools.map(t => chalk.yellow(t)).join(chalk.white(", ")));
-    const chunkResult = await reconEngine(target);
-    allResults.push(chunkResult);
-    console.log(chalk.greenBright(`Finished chunk ${i + 1}\n`));
+export async function reconEngine(target) {
+  console.log(chalk.bgBlue.white(`\n🤖 Asking MCP which tools to run for: ${target}`));
+  const selectedTools = await askMCPWhichTools(target);
+  console.log(chalk.bgCyan.black("\nMCP selected tools:") + " " + selectedTools.map(t => chalk.yellow(t)).join(chalk.white(", ")));
+
+  let results = [];
+  for (const toolName of selectedTools) {
+    const tool = toolMap[toolName];
+    if (!tool) {
+      results.push(`Tool ${toolName} not found.`);
+      continue;
+    }
+    try {
+      const mod = await import(tool.path);
+      const fn = mod[tool.fn];
+      if (typeof fn === 'function') {
+        results.push(await fn(target));
+      } else {
+        results.push(`Function ${tool.fn} not found in ${tool.path}`);
+      }
+    } catch (err) {
+      results.push(`Error running ${toolName}: ${err.message}`);
+    }
   }
-  console.log(chalk.bgGreen.black("\nAll recon chunks completed!"));
+
+  // Print and summarize results
+  const allResults = results.filter(Boolean).join('\n');
+  console.log(chalk.bgGreen.black("\nRecon Results:"));
+  console.log(allResults);
 
   // AI summary with Mistral
-  const aiPrompt = `Summarize the following recon results for target ${target}:\n${allResults.join('\n')}`;
+  const aiPrompt = `Summarize and analyze the following recon results for target ${target}. Provide actionable insights and next steps.\n${allResults}`;
   try {
     const aiResult = await mistral.chat.complete({
       model: "mistral-large-latest",
@@ -57,9 +78,14 @@ export async function runChunkedRecon(target) {
         { role: "user", content: aiPrompt }
       ]
     });
-    console.log(chalk.bgBlue.white("\nAI Summary:"));
+    console.log(chalk.bgMagenta.white("\nAI Summary:"));
     console.log(aiResult.choices?.[0]?.message?.content || JSON.stringify(aiResult));
   } catch (err) {
     console.log(chalk.red("\nAI summary failed: " + err.message));
   }
+}
+
+// For compatibility with index.js
+export async function runChunkedRecon(target) {
+  await reconEngine(target);
 }
