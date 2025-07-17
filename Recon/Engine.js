@@ -61,9 +61,14 @@ let mcpMemory = {
 };
 
 async function askMCPForReconPlan(target) {
-  const prompt = `You are an advanced reconnaissance AI agent. Given target: ${target}, create a comprehensive reconnaissance plan. 
+  // Determine if target is IP or domain
+  const isIP = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/.test(target);
+  
+  const prompt = `You are an advanced reconnaissance AI agent. Given target: ${target} (${isIP ? 'IP address' : 'domain'}), create a comprehensive reconnaissance plan. 
   
   Available tools: ${JSON.stringify(toolMap, null, 2)}
+  
+  IMPORTANT: For IP addresses, skip domain-specific tools like subfinder, amass, dnsrecon, crt.sh, theHarvester. Focus on network scanning and service enumeration.
   
   Return a JSON object with this structure:
   {
@@ -76,7 +81,7 @@ async function askMCPForReconPlan(target) {
     }
   }
   
-  Focus on comprehensive intelligence gathering and vulnerability discovery.`;
+  Focus on comprehensive intelligence gathering and vulnerability discovery. For IP targets, prioritize network scanning and service discovery.`;
 
   try {
     const aiResult = await mistral.chat.complete({
@@ -91,29 +96,56 @@ async function askMCPForReconPlan(target) {
     return JSON.parse(content);
   } catch (err) {
     console.log(chalk.red("\nAI recon plan generation failed: " + err.message));
-    return generateDefaultPlan();
+    return generateDefaultPlan(target);
   }
 }
 
-function generateDefaultPlan() {
-  return {
-    passive_phase: [
-      { tool: "whois", args: "<target>", purpose: "Domain information" },
-      { tool: "theHarvester", args: "-d <target> -b all", purpose: "OSINT gathering" },
-      { tool: "subfinder", args: "-d <target>", purpose: "Subdomain enumeration" }
-    ],
-    active_phase: [
-      { tool: "nmap_initial", args: "<target>", purpose: "Port scanning" },
-      { tool: "nmap_aggressive", args: "<target>", purpose: "Service detection" },
-      { tool: "whatweb", args: "<target>", purpose: "Web fingerprinting" }
-    ],
-    conditional_tools: {
-      if_web_detected: [
-        { tool: "nikto", args: "-h http://<target>", purpose: "Web vulnerability scan" },
-        { tool: "gobuster", args: "-u http://<target> -w /usr/share/wordlists/dirb/common.txt", purpose: "Directory enumeration" }
-      ]
-    }
-  };
+function generateDefaultPlan(target) {
+  const isIP = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/.test(target);
+  
+  if (isIP) {
+    // IP-specific plan
+    return {
+      passive_phase: [
+        { tool: "whois", args: "<target>", purpose: "IP information" }
+      ],
+      active_phase: [
+        { tool: "nmap_initial", args: "<target>", purpose: "Port scanning" },
+        { tool: "nmap_aggressive", args: "<target>", purpose: "Service detection" },
+        { tool: "whatweb", args: "<target>", purpose: "Web fingerprinting" },
+        { tool: "sslscan", args: "<target>", purpose: "SSL/TLS analysis" }
+      ],
+      conditional_tools: {
+        if_web_detected: [
+          { tool: "nikto", args: "-h http://<target>", purpose: "Web vulnerability scan" },
+          { tool: "gobuster", args: "-u http://<target> -w /usr/share/wordlists/dirb/common.txt", purpose: "Directory enumeration" }
+        ],
+        if_smb_detected: [
+          { tool: "enum4linux", args: "<target>", purpose: "SMB enumeration" }
+        ]
+      }
+    };
+  } else {
+    // Domain-specific plan
+    return {
+      passive_phase: [
+        { tool: "whois", args: "<target>", purpose: "Domain information" },
+        { tool: "theHarvester", args: "-d <target> -b all", purpose: "OSINT gathering" },
+        { tool: "subfinder", args: "-d <target>", purpose: "Subdomain enumeration" }
+      ],
+      active_phase: [
+        { tool: "nmap_initial", args: "<target>", purpose: "Port scanning" },
+        { tool: "nmap_aggressive", args: "<target>", purpose: "Service detection" },
+        { tool: "whatweb", args: "<target>", purpose: "Web fingerprinting" }
+      ],
+      conditional_tools: {
+        if_web_detected: [
+          { tool: "nikto", args: "-h http://<target>", purpose: "Web vulnerability scan" },
+          { tool: "gobuster", args: "-u http://<target> -w /usr/share/wordlists/dirb/common.txt", purpose: "Directory enumeration" }
+        ]
+      }
+    };
+  }
 }
 
 async function fillPlaceholders(args, tool) {
@@ -134,50 +166,78 @@ async function fillPlaceholders(args, tool) {
 
 async function runToolWithConfirmation(tool, args, purpose) {
   let finalArgs = await fillPlaceholders(args, tool);
-  let cmd = `${tool} ${finalArgs}`;
+  
+  // Fix command formatting - remove duplicate tool names
+  let cmd = finalArgs;
+  if (!finalArgs.startsWith(tool)) {
+    cmd = `${tool} ${finalArgs}`;
+  }
   
   console.log(chalk.cyan(`\n🔧 Tool: ${tool}`));
   console.log(chalk.yellow(`📋 Purpose: ${purpose}`));
   console.log(chalk.green(`⚡ Command: ${cmd}`));
   
-  const confirm = await askUser(`\nOptions: [r]un, [e]dit, [s]kip, [a]uto-run-all: `);
-  
-  if (confirm.toLowerCase() === 's') {
-    return { status: 'skipped', output: `Skipped by user` };
-  } else if (confirm.toLowerCase() === 'e') {
-    finalArgs = await askUser(`Edit arguments for ${tool}:\nCurrent: ${finalArgs}\nNew: `);
-    cmd = `${tool} ${finalArgs}`;
-  } else if (confirm.toLowerCase() === 'a') {
-    // Auto-run all remaining tools
-    mcpMemory.auto_run = true;
-  }
-  
-  if (confirm.toLowerCase() === 'r' || confirm.toLowerCase() === 'a' || mcpMemory.auto_run) {
-    try {
-      const startTime = Date.now();
-      const { stdout, stderr } = await execAsync(cmd);
-      const endTime = Date.now();
-      
-      mcpMemory.tool_outputs[tool] = {
-        command: cmd,
-        output: stdout,
-        error: stderr,
-        duration: endTime - startTime,
-        timestamp: new Date().toISOString()
-      };
-      
-      return { status: 'success', output: stdout, error: stderr };
-    } catch (error) {
-      mcpMemory.tool_outputs[tool] = {
-        command: cmd,
-        error: error.message,
-        timestamp: new Date().toISOString()
-      };
-      return { status: 'error', output: error.message };
+  // Only ask for confirmation if auto_run is not enabled
+  if (!mcpMemory.auto_run) {
+    const confirm = await askUser(`\nOptions: [r]un, [e]dit, [s]kip, [a]uto-run-all: `);
+    
+    if (confirm.toLowerCase() === 's') {
+      return { status: 'skipped', output: `Skipped by user` };
+    } else if (confirm.toLowerCase() === 'e') {
+      finalArgs = await askUser(`Edit arguments for ${tool}:\nCurrent: ${finalArgs}\nNew: `);
+      cmd = finalArgs.startsWith(tool) ? finalArgs : `${tool} ${finalArgs}`;
+    } else if (confirm.toLowerCase() === 'a') {
+      // Auto-run all remaining tools
+      mcpMemory.auto_run = true;
+    } else if (confirm.toLowerCase() !== 'r') {
+      return { status: 'skipped', output: 'Not executed' };
     }
   }
   
-  return { status: 'skipped', output: 'Not executed' };
+  try {
+    const startTime = Date.now();
+    const { stdout, stderr } = await execAsync(cmd);
+    const endTime = Date.now();
+    
+    mcpMemory.tool_outputs[tool] = {
+      command: cmd,
+      output: stdout,
+      error: stderr,
+      duration: endTime - startTime,
+      timestamp: new Date().toISOString()
+    };
+    
+    console.log(chalk.green(`✅ ${tool} completed successfully`));
+    return { status: 'success', output: stdout, error: stderr };
+  } catch (error) {
+    mcpMemory.tool_outputs[tool] = {
+      command: cmd,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    };
+    
+    console.log(chalk.red(`❌ ${tool} failed: ${error.message}`));
+    
+    // Handle errors based on auto_skip_errors setting
+    if (mcpMemory.auto_skip_errors) {
+      console.log(chalk.yellow(`⏭️  Auto-skipping failed tool due to smart mode`));
+      return { status: 'error', output: error.message };
+    }
+    
+    // Ask user what to do on error
+    const errorAction = await askUser(`\nTool failed. Options: [s]kip, [r]etry, [e]dit, [a]uto-skip-errors: `);
+    
+    if (errorAction.toLowerCase() === 'r') {
+      return await runToolWithConfirmation(tool, args, purpose);
+    } else if (errorAction.toLowerCase() === 'e') {
+      const newArgs = await askUser(`Edit command for ${tool}:\nCurrent: ${cmd}\nNew: `);
+      return await runToolWithConfirmation(tool, newArgs, purpose);
+    } else if (errorAction.toLowerCase() === 'a') {
+      mcpMemory.auto_skip_errors = true;
+    }
+    
+    return { status: 'error', output: error.message };
+  }
 }
 
 async function analyzeResultsWithMCP() {
@@ -271,6 +331,22 @@ export async function reconEngine(target) {
   
   mcpMemory.target = target;
   mcpMemory.auto_run = false;
+  mcpMemory.auto_skip_errors = false;
+  
+  // Ask user for execution mode
+  console.log(chalk.cyan(`\n🚀 Execution Mode Selection:`));
+  const mode = await askUser(`Choose mode: [i]nteractive (confirm each tool), [a]uto-run-all, [s]mart (auto-run, ask on errors): `);
+  
+  if (mode.toLowerCase() === 'a') {
+    mcpMemory.auto_run = true;
+    console.log(chalk.green(`✅ Auto-run mode enabled - all tools will run automatically`));
+  } else if (mode.toLowerCase() === 's') {
+    mcpMemory.auto_run = true;
+    mcpMemory.auto_skip_errors = true;
+    console.log(chalk.green(`✅ Smart mode enabled - auto-run with error handling`));
+  } else {
+    console.log(chalk.yellow(`✅ Interactive mode - you'll confirm each tool execution`));
+  }
   
   // Get AI-driven recon plan
   console.log(chalk.bgCyan.black(`\n🤖 Generating AI-driven reconnaissance plan...`));
