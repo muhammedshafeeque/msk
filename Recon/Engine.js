@@ -6,6 +6,10 @@ import { promisify } from 'util';
 import { askUser } from '../communicatetoUser.js';
 import fs from 'fs/promises';
 import path from 'path';
+import { FastIntelligenceEngine } from './IntelligenceEngine.js';
+import { ContextualIntelligenceEngine } from './ContextualEngine.js';
+import { BasicVulnExtractor } from './VulnExtractor.js';
+import { ExploitFinder } from './ExploitFinder.js';
 const execAsync = promisify(exec);
 
 // Check for common tool installations
@@ -439,6 +443,38 @@ export async function reconEngine(target) {
       console.log(chalk.cyan(`Result: ${result.status}`));
     }
   }
+  
+  // Phase 4: Fast Intelligence Engine Processing
+  console.log(chalk.bgBlue.black(`\n🧠 PHASE 4: Fast Intelligence Engine Processing`));
+  const intelligenceEngine = new FastIntelligenceEngine();
+  const intelligenceData = await intelligenceEngine.processReconResults(mcpMemory.tool_outputs);
+  
+  // Store intelligence data in MCP memory for chaining
+  mcpMemory.intelligence_data = intelligenceData;
+  
+  // Phase 5: Contextual Intelligence Engine Processing
+  console.log(chalk.bgBlue.black(`\n🧠 PHASE 5: Contextual Intelligence Engine Processing`));
+  const contextualEngine = new ContextualIntelligenceEngine();
+  const contextualData = await contextualEngine.processIntelligenceData(intelligenceData);
+  
+  // Store contextual data in MCP memory for chaining
+  mcpMemory.contextual_data = contextualData;
+  
+  // Phase 6: Basic Vuln Extractor Processing
+  console.log(chalk.bgBlue.black(`\n🔍 PHASE 6: Basic Vuln Extractor Processing`));
+  const vulnExtractor = new BasicVulnExtractor();
+  const vulnData = await vulnExtractor.processIntelligenceData(intelligenceData);
+  
+  // Store vulnerability data in MCP memory for chaining
+  mcpMemory.vuln_data = vulnData;
+  
+  // Phase 7: Exploit Finder & Fetcher Processing
+  console.log(chalk.bgBlue.black(`\n💥 PHASE 7: Exploit Finder & Fetcher Processing`));
+  const exploitFinder = new ExploitFinder();
+  const exploitData = await exploitFinder.processVulnData(vulnData);
+  
+  // Store exploit data in MCP memory for chaining
+  mcpMemory.exploit_data = exploitData;
   
   // Generate comprehensive analysis
   console.log(chalk.bgBlue.black(`\n🧠 AI Analysis and Intelligence Correlation`));
