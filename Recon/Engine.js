@@ -19,8 +19,8 @@ const toolMap = {
   'file_operations': ['ls', 'find', 'locate', 'which', 'whereis']
 };
 
-async function askMCPWhichCategoriesAndTools(target) {
-  const prompt = `You are an advanced recon AI. Given the target: ${target}, select the most effective categories and tools from this map: ${JSON.stringify(toolMap, null, 2)}.\nReturn a JSON object with categories as keys and arrays of tool commands as values, e.g. {\"network_scan\": [\"nmap\", \"arp-scan\"]}`;
+async function askMCPVulnFocused(target) {
+  const prompt = `You are an advanced vulnerability assessment AI. Given the target: ${target}, select the most effective categories and tools from this map: ${JSON.stringify(toolMap, null, 2)}. For each tool, provide the optimal command-line arguments and a short purpose/description for each run, focusing on vulnerability discovery. You may use the same tool multiple times with different arguments for different purposes (e.g., nmap for port scan, script scan, vuln scan, etc). Return a JSON object with categories as keys and arrays of objects as values, each object having 'tool', 'args', and 'purpose' properties. Example: {"vulnerability_scan": [{"tool": "nmap", "args": "-sV --script vuln <target>", "purpose": "Nmap vuln script scan"}, {"tool": "nmap", "args": "-A <target>", "purpose": "Nmap aggressive scan"}]}`;
   try {
     const aiResult = await mistral.chat.complete({
       model: "mistral-large-latest",
@@ -38,41 +38,40 @@ async function askMCPWhichCategoriesAndTools(target) {
     return JSON.parse(content);
   } catch (err) {
     console.log(chalk.red("\nAI tool selection failed: " + err.message));
-    // fallback: run all tools in all categories
-    return toolMap;
+    // fallback: run all tools in all categories with no extra args
+    const fallback = {};
+    for (const [cat, tools] of Object.entries(toolMap)) {
+      fallback[cat] = tools.map(tool => ({ tool, args: `<target>`, purpose: `Default run of ${tool}` }));
+    }
+    return fallback;
   }
 }
 
-async function runToolCommand(tool, target) {
-  // Build a basic command for each tool (customize as needed)
-  let cmd = tool;
-  // Add target if the tool expects it
-  if ([
-    'nmap', 'arp-scan', 'netdiscover', 'masscan', 'nikto', 'dirb', 'gobuster', 'ffuf', 'wfuzz', 'sqlmap', 'xsstrike', 'whois', 'sslscan', 'whatweb', 'amass'
-  ].includes(tool)) {
-    cmd += ` ${target}`;
-  }
+async function runToolCommandWithPurpose(tool, args, purpose, target) {
+  // Replace <target> in args with the actual target
+  const finalArgs = args.replace(/<target>/g, target);
+  const cmd = `${tool} ${finalArgs}`;
   try {
     const { stdout } = await execAsync(cmd);
-    return `\n[${tool}]\n${stdout}`;
+    return `\n[${tool} ${finalArgs}]\nPurpose: ${purpose}\n${stdout}`;
   } catch (error) {
-    return `\n[${tool} ERROR] ${error.message}`;
+    return `\n[${tool} ${finalArgs} ERROR]\nPurpose: ${purpose}\n${error.message}`;
   }
 }
 
 export async function reconEngine(target) {
-  console.log(chalk.bgBlue.white(`\n🤖 Asking MCP which categories and tools to run for: ${target}`));
-  const selected = await askMCPWhichCategoriesAndTools(target);
-  console.log(chalk.bgCyan.black("\nMCP selected tools:"));
-  Object.entries(selected).forEach(([cat, tools]) => {
-    console.log(chalk.yellow(cat) + ': ' + tools.map(t => chalk.green(t)).join(', '));
+  console.log(chalk.bgBlue.white(`\n🤖 Asking MCP for vulnerability-focused recon plan for: ${target}`));
+  const selected = await askMCPVulnFocused(target);
+  console.log(chalk.bgCyan.black("\nMCP selected tools, arguments, and purposes:"));
+  Object.entries(selected).forEach(([cat, arr]) => {
+    console.log(chalk.yellow(cat) + ': ' + arr.map(obj => chalk.green(obj.tool + ' ' + obj.args) + chalk.white(' (' + obj.purpose + ')')).join(', '));
   });
 
   let results = [];
-  for (const [category, tools] of Object.entries(selected)) {
+  for (const [category, arr] of Object.entries(selected)) {
     results.push(chalk.bold(`\n=== ${category} ===`));
-    for (const tool of tools) {
-      results.push(await runToolCommand(tool, target));
+    for (const { tool, args, purpose } of arr) {
+      results.push(await runToolCommandWithPurpose(tool, args, purpose, target));
     }
   }
 
@@ -82,7 +81,7 @@ export async function reconEngine(target) {
   console.log(allResults);
 
   // AI summary with Mistral
-  const aiPrompt = `Summarize and analyze the following recon results for target ${target}. Provide actionable insights and next steps.\n${allResults}`;
+  const aiPrompt = `Summarize and analyze the following vulnerability assessment results for target ${target}. Provide actionable insights and next steps.\n${allResults}`;
   try {
     const aiResult = await mistral.chat.complete({
       model: "mistral-large-latest",
