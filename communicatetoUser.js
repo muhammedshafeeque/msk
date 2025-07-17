@@ -11,3 +11,14 @@ export const askForTarget = async () => {
     rl.close()
     return target
 }
+
+export const askUser = async (question) => {
+    console.log(chalk.blue(question));
+    const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout
+    });
+    const answer = await new Promise(resolve => rl.question("", resolve));
+    rl.close();
+    return answer;
+};

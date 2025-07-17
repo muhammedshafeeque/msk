@@ -3,6 +3,7 @@ import chalk from 'chalk';
 import mistral from '../Config/Mistra.js';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { askUser } from '../communicatetoUser.js';
 const execAsync = promisify(exec);
 
 // Tool map: categories to tool commands
@@ -47,10 +48,36 @@ async function askMCPVulnFocused(target) {
   }
 }
 
+async function fillPlaceholders(args, tool) {
+  let filledArgs = args;
+  const placeholders = args.match(/<[^>]+>/g);
+  if (placeholders) {
+    for (const ph of placeholders) {
+      const value = await askUser(`Please provide a value for ${ph} in ${tool}:`);
+      filledArgs = filledArgs.replace(ph, value);
+    }
+  }
+  return filledArgs;
+}
+
 async function runToolCommandWithPurpose(tool, args, purpose, target) {
-  // Replace <target> in args with the actual target
-  const finalArgs = args.replace(/<target>/g, target);
-  const cmd = `${tool} ${finalArgs}`;
+  let finalArgs = await fillPlaceholders(args, tool);
+  let cmd = `${tool} ${finalArgs}`;
+  // Confirm with user, allow skip or edit
+  let confirmMsg = `About to run: ${cmd}\nPurpose: ${purpose}\nOptions: [y]es, [e]dit, [s]kip`;
+  while (true) {
+    const confirm = await askUser(confirmMsg);
+    if (confirm.toLowerCase() === 'y') {
+      break;
+    } else if (confirm.toLowerCase() === 's') {
+      return `[${tool} ${finalArgs}] Skipped by user.`;
+    } else if (confirm.toLowerCase() === 'e') {
+      finalArgs = await askUser(`Edit the arguments for ${tool}:\nCurrent: ${finalArgs}\nNew:`);
+      cmd = `${tool} ${finalArgs}`;
+    } else {
+      confirmMsg = `Please enter [y]es, [e]dit, or [s]kip:`;
+    }
+  }
   try {
     const { stdout } = await execAsync(cmd);
     return `\n[${tool} ${finalArgs}]\nPurpose: ${purpose}\n${stdout}`;
