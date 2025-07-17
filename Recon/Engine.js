@@ -8,6 +8,27 @@ import fs from 'fs/promises';
 import path from 'path';
 const execAsync = promisify(exec);
 
+// Check for common tool installations
+async function checkToolAvailability() {
+  const commonTools = ['nmap', 'masscan', 'whatweb', 'gobuster', 'nikto', 'enum4linux', 'snmpwalk', 'ike-scan'];
+  const missingTools = [];
+  
+  for (const tool of commonTools) {
+    try {
+      await execAsync(`which ${tool}`);
+    } catch (error) {
+      missingTools.push(tool);
+    }
+  }
+  
+  if (missingTools.length > 0) {
+    console.log(chalk.yellow(`\n⚠️  Missing tools: ${missingTools.join(', ')}`));
+    console.log(chalk.cyan(`💡 Install missing tools with: sudo apt install ${missingTools.join(' ')}`));
+  }
+  
+  return missingTools;
+}
+
 // Comprehensive tool map for complete reconnaissance
 const toolMap = {
   'passive_recon': {
@@ -24,9 +45,9 @@ const toolMap = {
     'nmap_initial': { cmd: 'nmap -sS -p- <target>', purpose: 'Initial port scan - all ports' },
     'nmap_aggressive': { cmd: 'nmap -A -T4 <target>', purpose: 'Aggressive service detection' },
     'nmap_vuln': { cmd: 'nmap -sV --script vuln <target>', purpose: 'Vulnerability script scan' },
-    'masscan': { cmd: 'masscan -p1-65535 --rate=1000 <target>', purpose: 'Ultra-fast port scanning' },
+    'masscan': { cmd: 'sudo masscan -p1-65535 --rate=1000 <target>', purpose: 'Ultra-fast port scanning' },
     'whatweb': { cmd: 'whatweb <target>', purpose: 'Web technology fingerprinting' },
-    'nuclei': { cmd: 'nuclei -u <target>', purpose: 'CVE and vulnerability scanning' },
+    'nuclei': { cmd: 'nuclei -u http://<target>', purpose: 'CVE and vulnerability scanning' },
     'gobuster': { cmd: 'gobuster dir -u http://<target> -w /usr/share/wordlists/dirb/common.txt', purpose: 'Directory brute force' },
     'nikto': { cmd: 'nikto -h http://<target>', purpose: 'Web vulnerability scanner' },
     'sslscan': { cmd: 'sslscan <target>', purpose: 'SSL/TLS weakness analysis' },
@@ -104,20 +125,19 @@ function generateDefaultPlan(target) {
   const isIP = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/.test(target);
   
   if (isIP) {
-    // IP-specific plan
+    // IP-specific plan - focus on network scanning and service discovery
     return {
       passive_phase: [
         { tool: "whois", args: "<target>", purpose: "IP information" }
       ],
       active_phase: [
         { tool: "nmap_initial", args: "<target>", purpose: "Port scanning" },
-        { tool: "nmap_aggressive", args: "<target>", purpose: "Service detection" },
         { tool: "whatweb", args: "<target>", purpose: "Web fingerprinting" },
-        { tool: "sslscan", args: "<target>", purpose: "SSL/TLS analysis" }
+        { tool: "enum4linux", args: "<target>", purpose: "SMB enumeration" },
+        { tool: "ike-scan", args: "<target>", purpose: "IKE VPN fingerprinting" }
       ],
       conditional_tools: {
         if_web_detected: [
-          { tool: "nikto", args: "-h http://<target>", purpose: "Web vulnerability scan" },
           { tool: "gobuster", args: "-u http://<target> -w /usr/share/wordlists/dirb/common.txt", purpose: "Directory enumeration" }
         ],
         if_smb_detected: [
@@ -167,15 +187,53 @@ async function fillPlaceholders(args, tool) {
 async function runToolWithConfirmation(tool, args, purpose) {
   let finalArgs = await fillPlaceholders(args, tool);
   
-  // Fix command formatting - remove duplicate tool names
+  // Get the actual command from toolMap
+  let actualTool = tool;
   let cmd = finalArgs;
-  if (!finalArgs.startsWith(tool)) {
-    cmd = `${tool} ${finalArgs}`;
+  
+  // Check if this is a mapped tool (like nmap_initial, nmap_aggressive, etc.)
+  for (const category of Object.values(toolMap)) {
+    for (const [toolName, toolInfo] of Object.entries(category)) {
+      if (toolName === tool) {
+        // Extract the actual command from the tool info
+        const toolCmd = toolInfo.cmd;
+        const filledCmd = await fillPlaceholders(toolCmd, toolName);
+        cmd = filledCmd;
+        // Extract the actual tool name (first word of the command)
+        actualTool = filledCmd.split(' ')[0];
+        break;
+      }
+    }
+  }
+  
+  // If not found in toolMap, use the original logic
+  if (cmd === finalArgs) {
+    if (!finalArgs.startsWith(tool)) {
+      cmd = `${tool} ${finalArgs}`;
+    }
   }
   
   console.log(chalk.cyan(`\n🔧 Tool: ${tool}`));
   console.log(chalk.yellow(`📋 Purpose: ${purpose}`));
   console.log(chalk.green(`⚡ Command: ${cmd}`));
+  
+  // Check if tool is available
+  try {
+    await execAsync(`which ${actualTool}`);
+  } catch (error) {
+    console.log(chalk.red(`❌ Tool ${actualTool} not found. Skipping...`));
+    return { status: 'skipped', output: `Tool ${actualTool} not installed` };
+  }
+  
+  // Special check for Shodan
+  if (actualTool === 'shodan') {
+    try {
+      await execAsync('shodan info');
+    } catch (error) {
+      console.log(chalk.red(`❌ Shodan not configured. Run 'shodan init <api_key>' first. Skipping...`));
+      return { status: 'skipped', output: 'Shodan API key not configured' };
+    }
+  }
   
   // Only ask for confirmation if auto_run is not enabled
   if (!mcpMemory.auto_run) {
@@ -332,6 +390,10 @@ export async function reconEngine(target) {
   mcpMemory.target = target;
   mcpMemory.auto_run = false;
   mcpMemory.auto_skip_errors = false;
+  
+  // Check tool availability first
+  console.log(chalk.cyan(`\n🔍 Checking tool availability...`));
+  await checkToolAvailability();
   
   // Ask user for execution mode
   console.log(chalk.cyan(`\n🚀 Execution Mode Selection:`));
