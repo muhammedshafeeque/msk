@@ -1,22 +1,26 @@
 // recon/reconEngine.js
 import chalk from 'chalk';
 import mistral from '../Config/Mistra.js';
-import { tools as allTools } from './Tools.js';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+const execAsync = promisify(exec);
 
-// Map tool names to their dynamic import paths and function names
+// Tool map: categories to tool commands
 const toolMap = {
-  nmap: { path: './Tools/nmap.js', fn: 'runNmap' },
-  amass: { path: './Tools/amass.js', fn: 'runAmass' },
-  theHarvester: { path: './Tools/theHarvester.js', fn: 'runHarvester' },
-  gobuster: { path: './Tools/gobuster.js', fn: 'runGobuster' },
-  whatweb: { path: './Tools/whatweb.js', fn: 'runWhatWeb' },
-  sslscan: { path: './Tools/sslscan.js', fn: 'runSSLScan' },
-  whois: { path: './Tools/whois.js', fn: 'runWhois' },
+  'network_scan': ['nmap', 'arp-scan', 'netdiscover', 'masscan'],
+  'port_scan': ['nmap', 'masscan', 'rustscan'],
+  'web_scan': ['nikto', 'dirb', 'gobuster', 'ffuf', 'wfuzz'],
+  'vulnerability_scan': ['nmap', 'nikto', 'sqlmap', 'xsstrike'],
+  'password_crack': ['john', 'hashcat', 'hydra', 'medusa'],
+  'file_analysis': ['file', 'strings', 'hexdump', 'binwalk'],
+  'process_analysis': ['ps', 'top', 'htop', 'lsof', 'netstat'],
+  'system_info': ['uname', 'lscpu', 'free', 'df', 'uptime'],
+  'text_processing': ['grep', 'sed', 'awk', 'cut', 'sort', 'uniq'],
+  'file_operations': ['ls', 'find', 'locate', 'which', 'whereis']
 };
 
-async function askMCPWhichTools(target) {
-  const prompt = `You are an advanced recon AI. Given the target: ${target}, select the most effective tools from this list: ${allTools.join(", ")}. 
-For each tool, specify the order and a short reason for its use. Return a JSON array of tool names in the order to run, e.g. ["nmap", "whois"].`;
+async function askMCPWhichCategoriesAndTools(target) {
+  const prompt = `You are an advanced recon AI. Given the target: ${target}, select the most effective categories and tools from this map: ${JSON.stringify(toolMap, null, 2)}.\nReturn a JSON object with categories as keys and arrays of tool commands as values, e.g. {\"network_scan\": [\"nmap\", \"arp-scan\"]}`;
   try {
     const aiResult = await mistral.chat.complete({
       model: "mistral-large-latest",
@@ -25,8 +29,8 @@ For each tool, specify the order and a short reason for its use. Return a JSON a
       ]
     });
     const content = aiResult.choices?.[0]?.message?.content;
-    // Try to extract JSON array from the response
-    const match = content.match(/\[.*\]/s);
+    // Try to extract JSON object from the response
+    const match = content.match(/\{[\s\S]*\}/);
     if (match) {
       return JSON.parse(match[0]);
     }
@@ -34,33 +38,41 @@ For each tool, specify the order and a short reason for its use. Return a JSON a
     return JSON.parse(content);
   } catch (err) {
     console.log(chalk.red("\nAI tool selection failed: " + err.message));
-    // fallback: run all tools
-    return allTools;
+    // fallback: run all tools in all categories
+    return toolMap;
+  }
+}
+
+async function runToolCommand(tool, target) {
+  // Build a basic command for each tool (customize as needed)
+  let cmd = tool;
+  // Add target if the tool expects it
+  if ([
+    'nmap', 'arp-scan', 'netdiscover', 'masscan', 'nikto', 'dirb', 'gobuster', 'ffuf', 'wfuzz', 'sqlmap', 'xsstrike', 'whois', 'sslscan', 'whatweb', 'amass'
+  ].includes(tool)) {
+    cmd += ` ${target}`;
+  }
+  try {
+    const { stdout } = await execAsync(cmd);
+    return `\n[${tool}]\n${stdout}`;
+  } catch (error) {
+    return `\n[${tool} ERROR] ${error.message}`;
   }
 }
 
 export async function reconEngine(target) {
-  console.log(chalk.bgBlue.white(`\n🤖 Asking MCP which tools to run for: ${target}`));
-  const selectedTools = await askMCPWhichTools(target);
-  console.log(chalk.bgCyan.black("\nMCP selected tools:") + " " + selectedTools.map(t => chalk.yellow(t)).join(chalk.white(", ")));
+  console.log(chalk.bgBlue.white(`\n🤖 Asking MCP which categories and tools to run for: ${target}`));
+  const selected = await askMCPWhichCategoriesAndTools(target);
+  console.log(chalk.bgCyan.black("\nMCP selected tools:"));
+  Object.entries(selected).forEach(([cat, tools]) => {
+    console.log(chalk.yellow(cat) + ': ' + tools.map(t => chalk.green(t)).join(', '));
+  });
 
   let results = [];
-  for (const toolName of selectedTools) {
-    const tool = toolMap[toolName];
-    if (!tool) {
-      results.push(`Tool ${toolName} not found.`);
-      continue;
-    }
-    try {
-      const mod = await import(tool.path);
-      const fn = mod[tool.fn];
-      if (typeof fn === 'function') {
-        results.push(await fn(target));
-      } else {
-        results.push(`Function ${tool.fn} not found in ${tool.path}`);
-      }
-    } catch (err) {
-      results.push(`Error running ${toolName}: ${err.message}`);
+  for (const [category, tools] of Object.entries(selected)) {
+    results.push(chalk.bold(`\n=== ${category} ===`));
+    for (const tool of tools) {
+      results.push(await runToolCommand(tool, target));
     }
   }
 
@@ -85,7 +97,6 @@ export async function reconEngine(target) {
   }
 }
 
-// For compatibility with index.js
 export async function runChunkedRecon(target) {
   await reconEngine(target);
 }
