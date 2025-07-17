@@ -1,8 +1,9 @@
 // validator.js
 
 import { URL } from 'url';
+import dns from 'dns/promises';
 
-function validateAndNormalizeTarget(input) {
+async function validateAndNormalizeTarget(input) {
   const trimmedInput = input.trim();
 
   // === Validate IPv4 ===
@@ -13,7 +14,8 @@ function validateAndNormalizeTarget(input) {
       isValid: true,
       type: 'ip',
       original: trimmedInput,
-      normalized: trimmedInput
+      normalized: trimmedInput, // Use the IP directly for recon
+      ip: trimmedInput
     };
   }
 
@@ -24,11 +26,19 @@ function validateAndNormalizeTarget(input) {
         ? trimmedInput
         : 'http://' + trimmedInput
     );
+    let resolvedIp = null;
+    try {
+      const lookupResult = await dns.lookup(url.hostname);
+      resolvedIp = lookupResult.address;
+    } catch (dnsErr) {
+      // DNS lookup failed, but still return hostname
+    }
     return {
       isValid: true,
       type: 'url',
       original: trimmedInput,
-      normalized: url.hostname
+      normalized: url.hostname, // Use the hostname for recon
+      ip: resolvedIp
     };
   } catch (err) {
     return {
