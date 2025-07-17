@@ -93,7 +93,10 @@ async function askMCPForReconPlan(target) {
   
   Available tools: ${JSON.stringify(toolMap, null, 2)}
   
-  IMPORTANT: For IP addresses, skip domain-specific tools like subfinder, amass, dnsrecon, crt.sh, theHarvester. Focus on network scanning and service enumeration.
+  IMPORTANT: 
+  1. For IP addresses, skip domain-specific tools like subfinder, amass, dnsrecon, crt.sh, theHarvester. Focus on network scanning and service enumeration.
+  2. Use the actual tool names (e.g., "nmap", "whois", "whatweb") not the mapped names (e.g., "nmap_initial", "nmap_aggressive").
+  3. For nmap, use different arguments for different scans: "-sS -p- <target>" for port scan, "-A -T4 <target>" for aggressive scan.
   
   Return a JSON object with this structure:
   {
@@ -135,7 +138,7 @@ function generateDefaultPlan(target) {
         { tool: "whois", args: "<target>", purpose: "IP information" }
       ],
       active_phase: [
-        { tool: "nmap_initial", args: "<target>", purpose: "Port scanning" },
+        { tool: "nmap", args: "-sS -p- <target>", purpose: "Port scanning" },
         { tool: "whatweb", args: "<target>", purpose: "Web fingerprinting" },
         { tool: "enum4linux", args: "<target>", purpose: "SMB enumeration" },
         { tool: "ike-scan", args: "<target>", purpose: "IKE VPN fingerprinting" }
@@ -158,8 +161,8 @@ function generateDefaultPlan(target) {
         { tool: "subfinder", args: "-d <target>", purpose: "Subdomain enumeration" }
       ],
       active_phase: [
-        { tool: "nmap_initial", args: "<target>", purpose: "Port scanning" },
-        { tool: "nmap_aggressive", args: "<target>", purpose: "Service detection" },
+        { tool: "nmap", args: "-sS -p- <target>", purpose: "Port scanning" },
+        { tool: "nmap", args: "-A -T4 <target>", purpose: "Service detection" },
         { tool: "whatweb", args: "<target>", purpose: "Web fingerprinting" }
       ],
       conditional_tools: {
@@ -196,6 +199,7 @@ async function runToolWithConfirmation(tool, args, purpose) {
   let cmd = finalArgs;
   
   // Check if this is a mapped tool (like nmap_initial, nmap_aggressive, etc.)
+  let foundInToolMap = false;
   for (const category of Object.values(toolMap)) {
     for (const [toolName, toolInfo] of Object.entries(category)) {
       if (toolName === tool) {
@@ -205,15 +209,19 @@ async function runToolWithConfirmation(tool, args, purpose) {
         cmd = filledCmd;
         // Extract the actual tool name (first word of the command)
         actualTool = filledCmd.split(' ')[0];
+        foundInToolMap = true;
         break;
       }
     }
+    if (foundInToolMap) break;
   }
   
   // If not found in toolMap, use the original logic
-  if (cmd === finalArgs) {
+  if (!foundInToolMap) {
     if (!finalArgs.startsWith(tool)) {
       cmd = `${tool} ${finalArgs}`;
+    } else {
+      cmd = finalArgs;
     }
   }
   
